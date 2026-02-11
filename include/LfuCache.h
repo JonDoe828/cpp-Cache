@@ -2,6 +2,7 @@
 
 #include "ICachePolicy.h"
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -140,13 +141,13 @@ private:
   void updateMinFreq();
 
 private:
-  int capacity_;      // 缓存容量
-  int minFreq_;       // 最小访问频次(用于找到最小访问频次结点)
-  int maxAverageNum_; // 最大平均访问频次
-  int curAverageNum_; // 当前平均访问频次
-  int curTotalNum_;   // 当前访问所有缓存次数总数
-  std::mutex mutex_;  // 互斥锁
-  NodeMap nodeMap_;   // key 到 缓存节点的映射
+  std::size_t capacity_; // 缓存容量
+  int minFreq_;          // 最小访问频次(用于找到最小访问频次结点)
+  int maxAverageNum_;    // 最大平均访问频次
+  int curAverageNum_;    // 当前平均访问频次
+  int curTotalNum_;      // 当前访问所有缓存次数总数
+  std::mutex mutex_;     // 互斥锁
+  NodeMap nodeMap_;      // key 到 缓存节点的映射
   std::unordered_map<int, std::unique_ptr<FreqList<Key, Value>>>
       freqToFreqList_; // 访问频次到该频次链表的映射
 };
@@ -299,14 +300,16 @@ void LfuCache<Key, Value>::updateMinFreq() {
 template <typename Key, typename Value> class KHashLfuCache {
 public:
   KHashLfuCache(size_t capacity, int sliceNum, int maxAverageNum = 10)
-      : sliceNum_(sliceNum > 0 ? sliceNum
-                               : std::thread::hardware_concurrency()),
-        capacity_(capacity) {
-    size_t sliceSize = std::ceil(
-        capacity_ / static_cast<double>(sliceNum_)); // 每个lfu分片的容量
+      : capacity_(capacity),
+        sliceNum_(sliceNum > 0
+                      ? sliceNum
+                      : static_cast<int>(std::thread::hardware_concurrency())) {
+    size_t sliceSize = static_cast<size_t>(
+        std::ceil(capacity_ / static_cast<double>(sliceNum_)));
+
     for (int i = 0; i < sliceNum_; ++i) {
       lfuSliceCaches_.emplace_back(
-          new LfuCache<Key, Value>(sliceSize, maxAverageNum));
+          std::make_unique<LfuCache<Key, Value>>(sliceSize, maxAverageNum));
     }
   }
 
@@ -343,8 +346,8 @@ private:
   }
 
 private:
-  size_t capacity_; // 缓存总容量
-  int sliceNum_;    // 缓存分片数量
+  std::size_t capacity_; // 缓存总容量
+  int sliceNum_;         // 缓存分片数量
   std::vector<std::unique_ptr<LfuCache<Key, Value>>>
       lfuSliceCaches_; // 缓存lfu分片容器
 };
