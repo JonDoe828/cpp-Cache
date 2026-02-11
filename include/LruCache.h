@@ -1,4 +1,5 @@
 #include "ICachePolicy.h"
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <memory>
@@ -7,43 +8,19 @@
 #include <unordered_map>
 #include <vector>
 
-template <typename Key, typename Value> class LruCache;
-
-template <typename Key, typename Value> class LruNode {
-private:
-  Key key_;
-  Value value_;
-  size_t accessCount_;                      // 访问次数
-  std::weak_ptr<LruNode<Key, Value>> prev_; // 改为weak_ptr打破循环引用
-  std::shared_ptr<LruNode<Key, Value>> next_;
-
-public:
-  LruNode(Key key, Value value) : key_(key), value_(value), accessCount_(1) {}
-
-  // 提供必要的访问器
-  Key getKey() const { return key_; }
-  Value getValue() const { return value_; }
-  void setValue(const Value &value) { value_ = value; }
-  size_t getAccessCount() const { return accessCount_; }
-  void incrementAccessCount() { ++accessCount_; }
-
-  friend class LruCache<Key, Value>;
-};
-
 template <typename Key, typename Value>
 class LruCache : public ICachePolicy<Key, Value> {
 public:
-  using LruNodeType = LruNode<Key, Value>;
-  using NodePtr = std::shared_ptr<LruNodeType>;
-  using NodeMap = std::unordered_map<Key, NodePtr>;
-
-  LruCache(int capacity) : capacity_(capacity) { initializeList(); }
+  LruCache(int capacity)
+      : capacity_(capacity > 0 ? static_cast<std::size_t>(capacity) : 0) {
+    initializeList();
+  }
 
   ~LruCache() override = default;
 
   // 添加缓存
   void put(Key key, Value value) override {
-    if (capacity_ <= 0)
+    if (capacity_ == 0)
       return;
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -88,10 +65,31 @@ public:
   }
 
 private:
+  struct Node {
+    Key key_;
+    Value value_;
+    // std::size_t accessCount_{1};
+    std::weak_ptr<Node> prev_;
+    std::shared_ptr<Node> next_;
+
+    Node() = default;
+    Node(const Key &key, const Value &value) : key_(key), value_(value) {}
+
+    const Key &getKey() const { return key_; }
+    const Value &getValue() const { return value_; }
+    void setValue(const Value &value) { value_ = value; }
+
+    // std::size_t getAccessCount() const { return accessCount_; }
+    // void incrementAccessCount() { ++accessCount_; }
+  };
+
+  using NodePtr = std::shared_ptr<Node>;
+  using NodeMap = std::unordered_map<Key, NodePtr>;
+
   void initializeList() {
     // 创建首尾虚拟节点
-    dummyHead_ = std::make_shared<LruNodeType>(Key(), Value());
-    dummyTail_ = std::make_shared<LruNodeType>(Key(), Value());
+    dummyHead_ = std::make_shared<Node>();
+    dummyTail_ = std::make_shared<Node>();
     dummyHead_->next_ = dummyTail_;
     dummyTail_->prev_ = dummyHead_;
   }
@@ -106,7 +104,7 @@ private:
       evictLeastRecent();
     }
 
-    NodePtr newNode = std::make_shared<LruNodeType>(key, value);
+    NodePtr newNode = std::make_shared<Node>(key, value);
     insertNode(newNode);
     nodeMap_[key] = newNode;
   }
@@ -118,25 +116,34 @@ private:
   }
 
   void removeNode(NodePtr node) {
-    if (!node->prev_.expired() && node->next_) {
-      auto prev = node->prev_.lock(); // 使用lock()获取shared_ptr
-      prev->next_ = node->next_;
-      node->next_->prev_ = prev;
-      node->next_ = nullptr; // 清空next_指针，彻底断开节点与链表的连接
-    }
+    auto prev = node->prev_.lock();
+    auto next = node->next_;
+    if (!prev || !next)
+      return; // 不在链上或 dummy
+
+    prev->next_ = next;
+    next->prev_ = prev;
+
+    node->next_.reset();
+    node->prev_.reset();
   }
 
   // 从尾部插入结点
   void insertNode(NodePtr node) {
+    auto prev = dummyTail_->prev_.lock();
+    assert(prev && "LRU list invariant broken: tail must have prev");
+
     node->next_ = dummyTail_;
-    node->prev_ = dummyTail_->prev_;
-    dummyTail_->prev_.lock()->next_ = node; // 使用lock()获取shared_ptr
+    node->prev_ = prev;
+    prev->next_ = node;
     dummyTail_->prev_ = node;
   }
 
   // 驱逐最近最少访问
   void evictLeastRecent() {
     NodePtr leastRecent = dummyHead_->next_;
+    if (!leastRecent || leastRecent == dummyTail_)
+      return; // 空链表不驱逐
     removeNode(leastRecent);
     nodeMap_.erase(leastRecent->getKey());
   }
@@ -151,15 +158,15 @@ private:
 
 // LRU优化：Lru-k版本。 通过继承的方式进行再优化
 template <typename Key, typename Value>
-class KLruKCache : public LruCache<Key, Value> {
+class LruKCache : public LruCache<Key, Value> {
 public:
-  KLruKCache(int capacity, int historyCapacity, int k)
-      : LruCache<Key, Value>(capacity) // 调用基类构造
-        ,
+  LruKCache(int capacity, int historyCapacity, int k)
+      : LruCache<Key, Value>(capacity),
         historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)),
         k_(k) {}
 
   Value get(Key key) {
+    std::lock_guard<std::mutex> lock(k_mutex_);
     // 首先尝试从主缓存获取数据
     Value value{};
     bool inMainCache = LruCache<Key, Value>::get(key, value);
@@ -199,6 +206,7 @@ public:
   }
 
   void put(Key key, Value value) {
+    std::lock_guard<std::mutex> lock(k_mutex_);
     // 检查是否已在主缓存
     Value existingValue{};
     bool inMainCache = LruCache<Key, Value>::get(key, existingValue);
@@ -228,6 +236,7 @@ public:
 
 private:
   int k_; // 进入缓存队列的评判标准
+  mutable std::mutex k_mutex_;
   std::unique_ptr<LruCache<Key, size_t>>
       historyList_; // 访问数据历史记录(value为访问次数)
   std::unordered_map<Key, Value> historyValueMap_; // 存储未达到k次访问的数据值
@@ -260,8 +269,7 @@ public:
   }
 
   Value get(Key key) {
-    Value value;
-    memset(&value, 0, sizeof(value));
+    Value value{};
     get(key, value);
     return value;
   }
@@ -274,8 +282,8 @@ private:
   }
 
 private:
-  size_t capacity_; // 总容量
-  int sliceNum_;    // 切片数量
+  std::size_t capacity_; // 总容量
+  int sliceNum_;         // 切片数量
   std::vector<std::unique_ptr<LruCache<Key, Value>>>
       lruSliceCaches_; // 切片LRU缓存
 };

@@ -2,7 +2,6 @@
 
 #include <random>
 #include <string>
-#include <vector>
 
 #include "LruCache.h"
 
@@ -123,5 +122,84 @@ TEST_CASE("LRU: random workload smoke test", "[lru][smoke]") {
   // 只做宽松检查：至少执行了 get
   REQUIRE(gets > 0);
   // 命中率不会是 0（正常情况下应该有命中）
-  REQUIRE(hits >= 0);
+  REQUIRE(hits > 0);
+}
+
+TEST_CASE("LRU-K: put does not immediately enter main cache, get promotes at k",
+          "[lruk]") {
+  // main cap=2, history cap=10, k=2
+  LruKCache<int, std::string> cache(2, 10, 2);
+
+  cache.put(1, "a");
+
+  // 第一次 get：historyCount 从 1->2 达到 k，且有 historyValueMap 值 =>
+  // 直接提升并返回
+  REQUIRE(cache.get(1) == "a");
+
+  // 已在主缓存，后续 get 仍是 a
+  REQUIRE(cache.get(1) == "a");
+}
+
+TEST_CASE("LRU-K: key never put cannot be promoted (returns default value)",
+          "[lruk]") {
+  LruKCache<int, std::string> cache(2, 10, 2);
+
+  // 从没 put 过 => historyValueMap 没值
+  REQUIRE(cache.get(42).empty());
+  REQUIRE(cache.get(42).empty()); // 即使次数够了也无法提升
+}
+
+TEST_CASE("LRU-K: promotion triggers main cache eviction by LRU order",
+          "[lruk]") {
+  // 主缓存容量=1，方便观察驱逐
+  LruKCache<int, std::string> cache(1, 10, 2);
+
+  cache.put(1, "a");
+  REQUIRE(cache.get(1) == "a"); // 提升 1 进入主缓存（k=2）
+
+  cache.put(2, "b");
+  REQUIRE(cache.get(2) == "b"); // 提升 2，会挤掉主缓存里的 1（cap=1）
+
+  // 1 被挤出主缓存；并且 1 在提升时 historyValueMap 已删除，无法再恢复值
+  REQUIRE(cache.get(1).empty());
+  REQUIRE(cache.get(2) == "b");
+}
+
+TEST_CASE("Sharded LRU: basic put/get works", "[sharded-lru]") {
+  KHashLruCaches<int, std::string> cache(/*capacity*/ 4, /*sliceNum*/ 2);
+
+  cache.put(1, "a");
+  cache.put(2, "b");
+
+  std::string out;
+  REQUIRE(cache.get(1, out));
+  REQUIRE(out == "a");
+  REQUIRE(cache.get(2, out));
+  REQUIRE(out == "b");
+
+  // get(key) 版本
+  REQUIRE(cache.get(1) == "a");
+  REQUIRE(cache.get(999).empty());
+}
+
+TEST_CASE("Sharded LRU: eviction happens within shard (sliceNum=1)",
+          "[sharded-lru]") {
+  // sliceNum=1 => 就是一个 LRU，容量=2
+  KHashLruCaches<int, std::string> cache(/*capacity*/ 2, /*sliceNum*/ 1);
+
+  cache.put(1, "a");
+  cache.put(2, "b");
+
+  // 访问 1，使 2 成为 LRU
+  std::string out;
+  REQUIRE(cache.get(1, out));
+  REQUIRE(out == "a");
+
+  cache.put(3, "c"); // 应该驱逐 2
+
+  REQUIRE_FALSE(cache.get(2, out));
+  REQUIRE(cache.get(1, out));
+  REQUIRE(out == "a");
+  REQUIRE(cache.get(3, out));
+  REQUIRE(out == "c");
 }

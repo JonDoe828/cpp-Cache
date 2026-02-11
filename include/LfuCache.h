@@ -1,4 +1,15 @@
-template <typename Key, typename Value> class KLfuCache;
+#pragma once
+
+#include <cmath>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+#include "ICachePolicy.h"
+
+template <typename Key, typename Value> class LfuCache;
 
 template <typename Key, typename Value> class FreqList {
 private:
@@ -54,21 +65,21 @@ public:
 
   NodePtr getFirstNode() const { return head_->next; }
 
-  friend class KLfuCache<Key, Value>;
+  friend class LfuCache<Key, Value>;
 };
 
 template <typename Key, typename Value>
-class KLfuCache : public KICachePolicy<Key, Value> {
+class LfuCache : public ICachePolicy<Key, Value> {
 public:
   using Node = typename FreqList<Key, Value>::Node;
   using NodePtr = std::shared_ptr<Node>;
   using NodeMap = std::unordered_map<Key, NodePtr>;
 
-  KLfuCache(int capacity, int maxAverageNum = 10)
+  LfuCache(int capacity, int maxAverageNum = 1000000)
       : capacity_(capacity), minFreq_(INT8_MAX), maxAverageNum_(maxAverageNum),
         curAverageNum_(0), curTotalNum_(0) {}
 
-  ~KLfuCache() override = default;
+  ~LfuCache() override = default;
 
   void put(Key key, Value value) override {
     if (capacity_ == 0)
@@ -138,7 +149,7 @@ private:
 };
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::getInternal(NodePtr node, Value &value) {
+void LfuCache<Key, Value>::getInternal(NodePtr node, Value &value) {
   // 找到之后需要将其从低访问频次的链表中删除，并且添加到+1的访问频次链表中，
   // 访问频次+1, 然后把value值返回
   value = node->value;
@@ -157,7 +168,7 @@ void KLfuCache<Key, Value>::getInternal(NodePtr node, Value &value) {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::putInternal(Key key, Value value) {
+void LfuCache<Key, Value>::putInternal(Key key, Value value) {
   // 如果不在缓存中，则需要判断缓存是否已满
   if (nodeMap_.size() == capacity_) {
     // 缓存已满，删除最不常访问的结点，更新当前平均访问频次和总访问频次
@@ -172,7 +183,7 @@ void KLfuCache<Key, Value>::putInternal(Key key, Value value) {
   minFreq_ = std::min(minFreq_, 1);
 }
 
-template <typename Key, typename Value> void KLfuCache<Key, Value>::kickOut() {
+template <typename Key, typename Value> void LfuCache<Key, Value>::kickOut() {
   NodePtr node = freqToFreqList_[minFreq_]->getFirstNode();
   removeFromFreqList(node);
   nodeMap_.erase(node->key);
@@ -180,7 +191,7 @@ template <typename Key, typename Value> void KLfuCache<Key, Value>::kickOut() {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::removeFromFreqList(NodePtr node) {
+void LfuCache<Key, Value>::removeFromFreqList(NodePtr node) {
   // 检查结点是否为空
   if (!node)
     return;
@@ -190,7 +201,7 @@ void KLfuCache<Key, Value>::removeFromFreqList(NodePtr node) {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::addToFreqList(NodePtr node) {
+void LfuCache<Key, Value>::addToFreqList(NodePtr node) {
   // 检查结点是否为空
   if (!node)
     return;
@@ -206,7 +217,7 @@ void KLfuCache<Key, Value>::addToFreqList(NodePtr node) {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::addFreqNum() {
+void LfuCache<Key, Value>::addFreqNum() {
   curTotalNum_++;
   if (nodeMap_.empty())
     curAverageNum_ = 0;
@@ -219,7 +230,7 @@ void KLfuCache<Key, Value>::addFreqNum() {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::decreaseFreqNum(int num) {
+void LfuCache<Key, Value>::decreaseFreqNum(int num) {
   // 减少平均访问频次和总访问频次
   curTotalNum_ -= num;
   if (nodeMap_.empty())
@@ -229,7 +240,7 @@ void KLfuCache<Key, Value>::decreaseFreqNum(int num) {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::handleOverMaxAverageNum() {
+void LfuCache<Key, Value>::handleOverMaxAverageNum() {
   if (nodeMap_.empty())
     return;
 
@@ -246,9 +257,16 @@ void KLfuCache<Key, Value>::handleOverMaxAverageNum() {
     removeFromFreqList(node);
 
     // 减少频率
-    node->freq -= maxAverageNum_ / 2;
+    int oldFreq = node->freq;
+
+    int decay = maxAverageNum_ / 2;
+    node->freq -= decay;
+
     if (node->freq < 1)
       node->freq = 1;
+
+    int delta = node->freq - oldFreq;
+    curTotalNum_ += delta;
 
     // 添加到新的频率列表
     addToFreqList(node);
@@ -259,7 +277,7 @@ void KLfuCache<Key, Value>::handleOverMaxAverageNum() {
 }
 
 template <typename Key, typename Value>
-void KLfuCache<Key, Value>::updateMinFreq() {
+void LfuCache<Key, Value>::updateMinFreq() {
   minFreq_ = INT8_MAX;
   for (const auto &pair : freqToFreqList_) {
     if (pair.second && !pair.second->isEmpty()) {
@@ -281,7 +299,7 @@ public:
         capacity_ / static_cast<double>(sliceNum_)); // 每个lfu分片的容量
     for (int i = 0; i < sliceNum_; ++i) {
       lfuSliceCaches_.emplace_back(
-          new KLfuCache<Key, Value>(sliceSize, maxAverageNum));
+          new LfuCache<Key, Value>(sliceSize, maxAverageNum));
     }
   }
 
@@ -320,6 +338,6 @@ private:
 private:
   size_t capacity_; // 缓存总容量
   int sliceNum_;    // 缓存分片数量
-  std::vector<std::unique_ptr<KLfuCache<Key, Value>>>
+  std::vector<std::unique_ptr<LfuCache<Key, Value>>>
       lfuSliceCaches_; // 缓存lfu分片容器
 };
