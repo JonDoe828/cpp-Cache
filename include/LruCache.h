@@ -1,10 +1,13 @@
-// 前向声明
+#include "ICachePolicy.h"
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
-template <typename Key, typename Value> class KLruCache;
+
+template <typename Key, typename Value> class LruCache;
 
 template <typename Key, typename Value> class LruNode {
 private:
@@ -24,19 +27,19 @@ public:
   size_t getAccessCount() const { return accessCount_; }
   void incrementAccessCount() { ++accessCount_; }
 
-  friend class KLruCache<Key, Value>;
+  friend class LruCache<Key, Value>;
 };
 
 template <typename Key, typename Value>
-class KLruCache : public KICachePolicy<Key, Value> {
+class LruCache : public ICachePolicy<Key, Value> {
 public:
   using LruNodeType = LruNode<Key, Value>;
   using NodePtr = std::shared_ptr<LruNodeType>;
   using NodeMap = std::unordered_map<Key, NodePtr>;
 
-  KLruCache(int capacity) : capacity_(capacity) { initializeList(); }
+  LruCache(int capacity) : capacity_(capacity) { initializeList(); }
 
-  ~KLruCache() override = default;
+  ~LruCache() override = default;
 
   // 添加缓存
   void put(Key key, Value value) override {
@@ -139,8 +142,8 @@ private:
   }
 
 private:
-  int capacity_;    // 缓存容量
-  NodeMap nodeMap_; // key -> Node
+  std::size_t capacity_; // 缓存容量
+  NodeMap nodeMap_;      // key -> Node
   std::mutex mutex_;
   NodePtr dummyHead_; // 虚拟头结点
   NodePtr dummyTail_;
@@ -148,18 +151,18 @@ private:
 
 // LRU优化：Lru-k版本。 通过继承的方式进行再优化
 template <typename Key, typename Value>
-class KLruKCache : public KLruCache<Key, Value> {
+class KLruKCache : public LruCache<Key, Value> {
 public:
   KLruKCache(int capacity, int historyCapacity, int k)
-      : KLruCache<Key, Value>(capacity) // 调用基类构造
+      : LruCache<Key, Value>(capacity) // 调用基类构造
         ,
-        historyList_(std::make_unique<KLruCache<Key, size_t>>(historyCapacity)),
+        historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)),
         k_(k) {}
 
   Value get(Key key) {
     // 首先尝试从主缓存获取数据
     Value value{};
-    bool inMainCache = KLruCache<Key, Value>::get(key, value);
+    bool inMainCache = LruCache<Key, Value>::get(key, value);
 
     // 获取并更新访问历史计数
     size_t historyCount = historyList_->get(key);
@@ -184,7 +187,7 @@ public:
         historyValueMap_.erase(it);
 
         // 添加到主缓存
-        KLruCache<Key, Value>::put(key, storedValue);
+        LruCache<Key, Value>::put(key, storedValue);
 
         return storedValue;
       }
@@ -198,11 +201,11 @@ public:
   void put(Key key, Value value) {
     // 检查是否已在主缓存
     Value existingValue{};
-    bool inMainCache = KLruCache<Key, Value>::get(key, existingValue);
+    bool inMainCache = LruCache<Key, Value>::get(key, existingValue);
 
     if (inMainCache) {
       // 已在主缓存，直接更新
-      KLruCache<Key, Value>::put(key, value);
+      LruCache<Key, Value>::put(key, value);
       return;
     }
 
@@ -219,13 +222,13 @@ public:
       // 达到阈值，添加到主缓存
       historyList_->remove(key);
       historyValueMap_.erase(key);
-      KLruCache<Key, Value>::put(key, value);
+      LruCache<Key, Value>::put(key, value);
     }
   }
 
 private:
   int k_; // 进入缓存队列的评判标准
-  std::unique_ptr<KLruCache<Key, size_t>>
+  std::unique_ptr<LruCache<Key, size_t>>
       historyList_; // 访问数据历史记录(value为访问次数)
   std::unordered_map<Key, Value> historyValueMap_; // 存储未达到k次访问的数据值
 };
@@ -240,7 +243,7 @@ public:
     size_t sliceSize = std::ceil(
         capacity / static_cast<double>(sliceNum_)); // 获取每个分片的大小
     for (int i = 0; i < sliceNum_; ++i) {
-      lruSliceCaches_.emplace_back(new KLruCache<Key, Value>(sliceSize));
+      lruSliceCaches_.emplace_back(new LruCache<Key, Value>(sliceSize));
     }
   }
 
@@ -273,6 +276,6 @@ private:
 private:
   size_t capacity_; // 总容量
   int sliceNum_;    // 切片数量
-  std::vector<std::unique_ptr<KLruCache<Key, Value>>>
+  std::vector<std::unique_ptr<LruCache<Key, Value>>>
       lruSliceCaches_; // 切片LRU缓存
 };
