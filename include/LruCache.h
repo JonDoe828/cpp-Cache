@@ -19,7 +19,7 @@ public:
   ~LruCache() override = default;
 
   // 添加缓存
-  void put(Key key, Value value) override {
+  void put(const Key &key, const Value &value) override {
     if (capacity_ == 0)
       return;
 
@@ -34,7 +34,7 @@ public:
     addNewNode(key, value);
   }
 
-  bool get(Key key, Value &value) override {
+  bool get(const Key &key, Value &value) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
@@ -45,7 +45,7 @@ public:
     return false;
   }
 
-  Value get(Key key) override {
+  Value get(const Key &key) override {
     Value value{};
     // memset(&value, 0, sizeof(value));   // memset
     // 是按字节设置内存的，对于复杂类型（如 string）使用 memset
@@ -55,7 +55,7 @@ public:
   }
 
   // 删除指定元素
-  void remove(Key key) {
+  void remove(const Key &key) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
@@ -106,7 +106,7 @@ private:
 
     NodePtr newNode = std::make_shared<Node>(key, value);
     insertNode(newNode);
-    nodeMap_[key] = newNode;
+    nodeMap_.try_emplace(key, newNode);
   }
 
   // 将该节点移动到最新的位置
@@ -161,9 +161,9 @@ template <typename Key, typename Value>
 class LruKCache : public LruCache<Key, Value> {
 public:
   LruKCache(int capacity, int historyCapacity, int k)
-      : LruCache<Key, Value>(capacity),
-        historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)),
-        k_(k) {}
+      : LruCache<Key, Value>(capacity), k_(k),
+        historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)) {
+  }
 
   Value get(Key key) {
     std::lock_guard<std::mutex> lock(k_mutex_);
@@ -218,7 +218,7 @@ public:
     }
 
     // 获取并更新访问历史
-    size_t historyCount = historyList_->get(key);
+    std::size_t historyCount = historyList_->get(key);
     historyCount++;
     historyList_->put(key, historyCount);
 

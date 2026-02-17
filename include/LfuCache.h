@@ -82,7 +82,7 @@ public:
 
   ~LfuCache() override = default;
 
-  void put(Key key, Value value) override {
+  void put(const Key &key, const Value &value) override {
     if (capacity_ == 0)
       return;
 
@@ -92,7 +92,9 @@ public:
       // 重置其value值
       it->second->value = value;
       // 找到了直接调整就好了，不用再去get中再找一遍，但其实影响不大
-      getInternal(it->second, value);
+      Value tmp = value;
+      getInternal(it->second, tmp);
+
       return;
     }
 
@@ -100,18 +102,19 @@ public:
   }
 
   // value值为传出参数
-  bool get(Key key, Value &value) override {
+  bool get(const Key &key, Value &value) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
-      getInternal(it->second, value);
+      Value tmp = value;
+      getInternal(it->second, tmp);
       return true;
     }
 
     return false;
   }
 
-  Value get(Key key) override {
+  Value get(const Key &key) override {
     Value value{};
     get(key, value);
     return value;
